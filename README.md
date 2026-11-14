@@ -16,7 +16,10 @@ Model uczenia maszynowego do identyfikacji poziomu stresu kierowcy w czasie rzec
 | Dziedzina | Cechy |
 |---|---|
 | Czas | BPM, SDNN, RMSSD, pNN50, SD1, SD2 |
-| Częstotliwość | LF (0,04-0,15 Hz), HF (0,15-0,4 Hz), LF/HF |
+| Częstotliwość | LF (0,04-0,15 Hz), HF (0,15-0,4 Hz), LF/HF – moc w ms² z PSD Welcha |
+
+- **Odrzucanie RR:** granice fizjologiczne (300–2000 ms) i odchylenie od lokalnej mediany sąsiednich RR (domyślnie > 20%). RR obejmujące lukę w danych (zgubione pakiety BLE, wykrywane z kolumny `Timestamp`) są zawsze odrzucane.
+- **Długość okna a widmo:** HF jest liczone, gdy prawidłowe RR pokrywają co najmniej ok. 50 s, a LF i LF/HF przy co najmniej ok. 110 s (pasmo LF zaczyna się od 0,04 Hz). W krótszych oknach te cechy mają wartość pustą (NaN).
 
 Interpretacja parametrów i podstawy medyczne (autonomiczny układ nerwowy, HRV, ograniczenia metody) są opisane w dokumentacji w folderze `docs/`.
 
@@ -58,7 +61,7 @@ Pliki `main.py`, `funkcje.py` i `ECG.py` muszą leżeć w jednym folderze. Nie n
 ## Format danych
 
 - **Wejście:** plik CSV z kolumnami `Timestamp` i `ECG_Value`, jedna próbka na wiersz (250 Hz).
-- **Wyjście:** `features_*.csv`, jedno okno to jeden wiersz: cechy HRV, cechy względem baseline'u (`*_rel`), jakość okna (`n_beats`, `rr_reject_frac`, `valid`) oraz `t_start`, `t_end`, `label` (0 – odpoczynek, 1 – zadanie).
+- **Wyjście:** `features_*.csv`, jedno okno to jeden wiersz: cechy HRV, cechy względem baseline'u (`*_rel`), jakość okna (`n_beats`, `rr_reject_frac`, `n_gaps`, `valid`) oraz `t_start`, `t_end` (sekundy od początku nagrania, z uwzględnieniem luk), `ts_start`, `ts_end` (bezwzględny `Timestamp` z opaski [ms], do synchronizacji z eye-trackerem) i `label` (0 – odpoczynek, 1 – zadanie).
 
 ## Dane pomiarowe
 

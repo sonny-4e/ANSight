@@ -1,19 +1,28 @@
 import numpy as np
 import scipy.signal as sig
-from scipy.fft import fft
+from scipy.integrate import trapezoid
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 
 class ECG:
-    def __init__(self, ecg_signal=None, sampling_frequency=None, name='ECG'):
+    def __init__(self, ecg_signal=None, sampling_frequency=None, name='ECG', time=None, gaps=None):
+        """time - opcjonalna os czasu [s] (np. z kolumny Timestamp, z uwzglednieniem luk),
+        gaps - lista przerw w danych [(t_poczatek, t_koniec), ...] w tej samej osi czasu.
+        RR obejmujace przerwe sa oznaczane jako nieprawidlowe."""
         self.name = name
+        self.gaps = list(gaps) if gaps is not None else []
 
         if ecg_signal is not None and sampling_frequency is not None:
             self.signal = np.array(ecg_signal).flatten()
             self.Fs = sampling_frequency
             self.len = len(self.signal)
             T = 1.0 / self.Fs
-            self.timeVal = np.arange(self.len) * T
+            if time is not None:
+                self.timeVal = np.asarray(time, dtype=float).flatten()
+                if len(self.timeVal) != self.len:
+                    raise ValueError("Os czasu musi miec tyle samo probek co sygnal.")
+            else:
+                self.timeVal = np.arange(self.len) * T
         else:
             self.signal = np.array([])
             self.Fs = 0
@@ -51,6 +60,7 @@ class ECG:
         self.HRV_R = np.array([])
         self.tHRV = np.array([])
         self.LHRV = 0
+        self.hrvSpan = 0.0  # czas [s] pokryty prawidlowymi RR (do oceny, czy widmo ma sens)
         self.FsHRV = 4
         self.fftHRV = np.array([])
         self.p1 = np.array([])
@@ -101,39 +111,62 @@ class ECG:
         if len(self.locs) > 1:
             self.BPMglobal = (len(self.locs) / (self.len / self.Fs)) * 60
             self.rr = np.diff(self.locs)
-            self.pkTimes = self.locs[:-1]
+            self.pkTimes = self.locs[1:]  # RR przypisany do uderzenia, ktore go konczy
             self.BPMlocal = 60 / np.mean(self.rr)
 
     def variabilityReject(self, **kwargs):
-        reject = kwargs.get('Reject', 'on')
-        std_scalar = kwargs.get('STDscalar', 1.96)
-        if reject == 'on' and len(self.rr) > 0:
-            pkMean = np.mean(self.rr)
-            pk2STD = np.std(self.rr, ddof=1) * std_scalar
-            arr_reject = (self.rr > pkMean + pk2STD) | (self.rr < pkMean - pk2STD)
-            valid_idx = ~arr_reject
-            self.valid_idx = valid_idx  # POPRAWKA: zapamietujemy, ktore RR sa prawidlowe
-            self.rrA = self.rr.copy()
-            self.pkTimesA = self.pkTimes.copy()
-            self.rr = self.rr[valid_idx]
-            self.pkTimes = self.pkTimes[valid_idx]
-            if len(self.rr) > 0:
-                self.BPMlocal = 60 / np.mean(self.rr)
+        """Odrzucanie nieprawidlowych RR (artefakty, zgubione/dodatkowe uderzenia, luki w danych).
+
+        Kryteria:
+          1) granice fizjologiczne: RRmin <= RR <= RRmax [s],
+          2) RR odbiega od mediany sasiednich RR o wiecej niz RRmaxDev (np. 0.2 = 20%),
+          3) RR obejmuje przerwe w danych (self.gaps).
+        W odroznieniu od progu srednia +- k*SD nie wyrzuca prawidlowych uderzen
+        z czystego sygnalu i nie 'scina' prawdziwej zmiennosci rytmu."""
+        self.rrA = self.rr.copy()
+        self.pkTimesA = self.pkTimes.copy()
+        n = len(self.rrA)
+        valid = np.ones(n, dtype=bool)
+
+        if kwargs.get('Reject', 'on') == 'on' and n > 0:
+            rr_min = kwargs.get('RRmin', 0.3)
+            rr_max = kwargs.get('RRmax', 2.0)
+            max_dev = kwargs.get('RRmaxDev', 0.2)
+            half = kwargs.get('RRmedianHalfWidth', 5)
+
+            valid &= (self.rrA >= rr_min) & (self.rrA <= rr_max)
+            for i in range(n):
+                lo, hi = max(0, i - half), min(n, i + half + 1)
+                sasiedzi = np.r_[self.rrA[lo:i], self.rrA[i + 1:hi]]
+                sasiedzi = sasiedzi[(sasiedzi >= rr_min) & (sasiedzi <= rr_max)]
+                if len(sasiedzi) >= 2:
+                    med = np.median(sasiedzi)
+                    if abs(self.rrA[i] - med) > max_dev * med:
+                        valid[i] = False
+
+        # RR, ktorego przedzial [poprzednie R, R] nachodzi na przerwe w danych, jest niewiarygodny
+        if n > 0 and self.gaps:
+            margines = kwargs.get('GapMargin', 0.3)
+            pocz = self.locs[:-1]
+            kon = self.locs[1:]
+            for g0, g1 in self.gaps:
+                valid &= ~((pocz <= g1 + margines) & (kon >= g0 - margines))
+
+        self.valid_idx = valid
+        self.rr = self.rrA[valid]
+        self.pkTimes = self.pkTimesA[valid]
+        if len(self.rr) > 0:
+            self.BPMlocal = 60 / np.mean(self.rr)
 
     def calculateHRVNumerics(self):
         if len(self.rr) < 2: return
         self.SDNN = np.std(self.rr * 1000, ddof=1)
         self.IBImean = np.mean(self.rr * 1000)
-        self.IBIrange = [np.min(self.rr * 1000), np.max(self.rr * 1000)]  # POPRAWKA: bylo [max, min]
+        self.IBIrange = [np.min(self.rr * 1000), np.max(self.rr * 1000)]
 
-        # POPRAWKA: roznice (RMSSD, NN50, SD1/SD2) tylko miedzy SASIEDNIMI prawidlowymi RR.
-        # Wczesniej po odrzuceniu RR roznicowano interwaly, ktore nie byly sasiednie w czasie.
-        if len(self.rrA) > 0:
-            baza = self.rrA
-            para = self.valid_idx[:-1] & self.valid_idx[1:]
-        else:  # Reject='off'
-            baza = self.rr
-            para = np.ones(len(self.rr) - 1, dtype=bool)
+        # roznice (RMSSD, NN50, SD1/SD2) tylko miedzy SASIEDNIMI prawidlowymi RR
+        baza = self.rrA
+        para = self.valid_idx[:-1] & self.valid_idx[1:]
         differences = np.diff(baza)[para]
         if len(differences) < 2: return
 
@@ -146,33 +179,35 @@ class ECG:
         self.SD2 = np.std(pmX + pmY, ddof=1) / np.sqrt(2)
 
     def resampleHRV(self, FsHRV=4):
+        """Interpolacja prawidlowych RR [ms] do rownomiernej siatki FsHRV [Hz] (tachogram)."""
         self.FsHRV = FsHRV
         THRV = 1.0 / self.FsHRV
-        if len(self.pkTimes) > 1:
-            interp_func = interp1d(self.pkTimes, self.rr, kind='cubic', fill_value="extrapolate")
+        self.hrvSpan = float(self.pkTimes[-1] - self.pkTimes[0]) if len(self.pkTimes) > 1 else 0.0
+        if len(self.pkTimes) >= 4:
+            interp_func = interp1d(self.pkTimes, self.rr * 1000, kind='cubic')
             self.tHRV = np.arange(self.pkTimes[0], self.pkTimes[-1], THRV)
             self.HRV_R = interp_func(self.tHRV)
             self.LHRV = len(self.HRV_R)
             self.tHRV = np.arange(self.LHRV) * THRV
 
     def freqAnalysisHRV(self):
-        if self.LHRV == 0: return
-        yF = fft(self.HRV_R)
-        p2 = np.abs(yF / self.LHRV)
-        half_len = self.LHRV // 2 + 1
-        self.p1 = p2[:half_len]
-        self.p1[1:-1] = 2 * self.p1[1:-1]
-        self.fftHRV = self.FsHRV * np.arange(half_len) / self.LHRV
+        """Gestosc widmowa mocy (Welch, okno Hanna, detrend liniowy) tachogramu w ms^2/Hz,
+        moc w pasmach = calka PSD [ms^2] - tak jak w Kubios / Task Force 1996."""
+        if self.LHRV < 16: return
+        y = self.HRV_R - np.mean(self.HRV_R)
+        nperseg = min(256, self.LHRV)
+        self.fftHRV, self.p1 = sig.welch(y, fs=self.FsHRV, window='hann', nperseg=nperseg,
+                                         noverlap=nperseg // 2, detrend='linear')
 
-        lf_idx = (self.fftHRV >= 0.04) & (self.fftHRV <= 0.15)
+        lf_idx = (self.fftHRV >= 0.04) & (self.fftHRV < 0.15)
         self.lf = self.fftHRV[lf_idx]
         self.p1LF = self.p1[lf_idx]
-        self.lfPower = np.sum(self.p1LF) * 1000
+        self.lfPower = trapezoid(self.p1LF, self.lf) if lf_idx.sum() > 1 else 0.0
 
-        hf_idx = (self.fftHRV > 0.15) & (self.fftHRV <= 0.4)
+        hf_idx = (self.fftHRV >= 0.15) & (self.fftHRV <= 0.4)
         self.hf = self.fftHRV[hf_idx]
         self.p1HF = self.p1[hf_idx]
-        self.hfPower = np.sum(self.p1HF) * 1000
+        self.hfPower = trapezoid(self.p1HF, self.hf) if hf_idx.sum() > 1 else 0.0
 
         if self.hfPower > 0:
             self.lowFreqHighFreqRatio = self.lfPower / self.hfPower

@@ -42,7 +42,7 @@ POLA_PARAMETROW = [
     ("MinPeakHeight", "Min. wysokość piku R (Z-score)", 0.1, 5, 0.1, 2),
     ("MinPeakProminence", "Min. prominencja piku R", 0.1, 5, 0.1, 2),
     ("MinPeakDistance", "Min. odstęp pików [s]", 0.2, 1, 0.05, 2),
-    ("STDscalar", "Odrzucanie RR: mnożnik σ", 1, 4, 0.1, 2),
+    ("RRmaxDev", "Odrzucanie RR: max odchylenie od mediany", 0.05, 0.5, 0.05, 2),
     ("min_uderzen", "Min. uderzeń w oknie", 5, 200, 5, 0),
     ("max_odrzucone", "Max. odsetek odrzuconych RR", 0.05, 1, 0.05, 2),
 ]
@@ -83,7 +83,7 @@ class LiveECGAnalyzer(DeviceDelegate):
             return
 
         self.csv_writer.writerow([timestamp, value])
-        self.data_queue.put(value)
+        self.data_queue.put((timestamp, value))
         self.samples_collected += 1
 
         # zrzut na dysk co ok. 1 s, zeby przy przerwaniu nie stracic danych
@@ -99,7 +99,7 @@ class LiveECGAnalyzer(DeviceDelegate):
 
 
 def run_aidlab_thread(data_queue, stop_event, czas_pomiaru_s, fs, sciezka):
-    """Do kolejki trafiaja: liczby (probki EKG), napisy (statusy) i None (koniec)."""
+    """Do kolejki trafiaja: krotki (timestamp, probka EKG), napisy (statusy) i None (koniec)."""
     async def main_async():
         analyzer = LiveECGAnalyzer(data_queue, czas_pomiaru_s, fs, sciezka)
         try:
@@ -218,6 +218,7 @@ class ZakladkaLive(QWidget):
         # bufor do wykresu i dluzszy bufor do liczenia HRV (deque sam gubi najstarsze probki)
         self.bufor_wykres = deque(maxlen=self.sb_okno_wykresu.value() * p["fs"])
         self.bufor_hrv = deque(maxlen=self.sb_okno_analizy.value() * p["fs"])
+        self.bufor_ts = deque(maxlen=self.sb_okno_analizy.value() * p["fs"])  # Timestamp -> wykrywanie luk
 
         watek = threading.Thread(
             target=run_aidlab_thread,
@@ -242,7 +243,7 @@ class ZakladkaLive(QWidget):
         self.glowne.ustaw_parametry_aktywne(not trwa)
 
     def aktualizuj_wykres(self):
-        nowe = []
+        nowe, nowe_ts = [], []
         while not self.kolejka.empty():
             val = self.kolejka.get()
             if val is None:  # koniec pomiaru
@@ -251,11 +252,13 @@ class ZakladkaLive(QWidget):
             if isinstance(val, str):  # komunikat statusu
                 self.status.setText(val)
                 continue
-            nowe.append(val)
+            nowe_ts.append(val[0])
+            nowe.append(val[1])
 
         if nowe:
             self.bufor_wykres.extend(nowe)
             self.bufor_hrv.extend(nowe)
+            self.bufor_ts.extend(nowe_ts)
             y = np.array(self.bufor_wykres)
             y = y - np.median(y)
             x = np.arange(-len(y), 0) / self.p["fs"]
@@ -268,7 +271,7 @@ class ZakladkaLive(QWidget):
             self.status.setText(f"Zbieram dane do analizy HRV ({len(self.bufor_hrv) // fs}/{minimum // fs} s)...")
             return
         try:
-            c = analizuj_okno_live(np.array(self.bufor_hrv), self.p)
+            c = analizuj_okno_live(np.array(self.bufor_hrv), self.p, timestamps=np.array(self.bufor_ts))
             if np.isnan(c["bpm"]):
                 self.info_label.setText("<span style='color: orange'>Nie wykryto uderzeń - sprawdź sygnał</span>")
                 return
@@ -397,8 +400,9 @@ class ZakladkaOffline(QWidget):
             return
         srednie = wazne.groupby("label")[["bpm", "sdnn", "rmssd", "pnn50", "lf_hf"]].mean()
         nazwy = {0: "odpoczynek", 1: "zadanie"}
+        lf_hf = lambda v: f"{v:.2f}" if not np.isnan(v) else "-- (okno < 2 min)"
         linie = [f"{nazwy[l]}: BPM {r.bpm:.1f} | SDNN {r.sdnn:.1f} | RMSSD {r.rmssd:.1f} | "
-                 f"pNN50 {r.pnn50:.1f} | LF/HF {r.lf_hf:.2f}" for l, r in srednie.iterrows()]
+                 f"pNN50 {r.pnn50:.1f} | LF/HF {lf_hf(r.lf_hf)}" for l, r in srednie.iterrows()]
         self.podsumowanie.setText("Średnie (okna ważne)\n" + "\n".join(linie))
 
     def wypelnij_tabele(self):
@@ -461,7 +465,8 @@ class GlowneOkno(QWidget):
 
     def pobierz_parametry(self):
         """Zbiera parametry z GUI do slownika dla ECG.py. Zwraca None przy blednych wartosciach."""
-        p = {k: sb.value() for k, sb in self.pola.items()}
+        p = dict(PARAMETRY)  # parametry spoza GUI (np. granice RR, progi widma) z wartosci domyslnych
+        p.update({k: sb.value() for k, sb in self.pola.items()})
         for k in ("fs", "rzad_filtru", "min_uderzen"):
             p[k] = int(p[k])
         if not (p["filtr_dol"] < p["filtr_gora"] < p["fs"] / 2):
