@@ -1,8 +1,10 @@
-# DriveSense
+# ANSight
 
-Model uczenia maszynowego do identyfikacji poziomu stresu kierowcy w czasie rzeczywistym na podstawie danych okulograficznych i EKG (Projekt IPZ).
+Ocena poziomu stresu na podstawie pracy serca (EKG z opaski Aidlab) i oczu (okulary Tobii Pro Glasses 3) z użyciem uczenia maszynowego (Projekt IPZ).
 
-**Status: wczesny etap rozwoju.** Gotowy jest moduł przetwarzania EKG (pomiar na żywo z opaski Aidlab i analiza offline). Kolejne etapy: dataset, model uczący się na cechach HRV, fuzja z danymi z eye-trackingu.
+Nazwa pochodzi od **ANS** (*autonomic nervous system*, autonomiczny układ nerwowy), który pod wpływem stresu zmienia zarówno rytm serca, jak i średnicę źrenicy, oraz od *insight*.
+
+**Status: wczesny etap rozwoju.** Gotowy jest moduł EKG (pomiar na żywo z opaski Aidlab i analiza offline). W przygotowaniu: protokół badania (kalibracja ok. 7 min, która tworzy profil osoby, i test właściwy ok. 30 min), program do odczytu danych z okularów, a potem baza danych i model.
 
 ## Co potrafi aplikacja
 
@@ -45,18 +47,27 @@ Aplikacja ma dwie zakładki:
 ## Struktura repozytorium
 
 ```
-DriveSense/
+ANSight/
 ├── main.py            interfejs graficzny (PyQt5) i akwizycja z Aidlab
 ├── funkcje.py         parametry, filtrowanie, analiza nagrań
 ├── ECG.py             klasa ECG: detekcja R, cechy HRV
-├── docs/              dokumentacja projektu
-├── matlab/            oryginalny kod MATLAB
+├── ECG/               oryginalny kod MATLAB
+├── docs/              dokumentacja projektu (HRV, plan, podział pracy, harmonogram)
 ├── data/              lokalne pomiary (ignorowane przez git)
 ├── requirements.txt
 └── README.md
 ```
 
-Pliki `main.py`, `funkcje.py` i `ECG.py` muszą leżeć w jednym folderze. Nie należy tworzyć folderu o nazwie `ECG`, bo Python wczyta go zamiast pliku `ECG.py`.
+Pliki `main.py`, `funkcje.py` i `ECG.py` muszą leżeć w jednym folderze. Folder `ECG/` zawiera tylko kod MATLAB i nie ma pliku `__init__.py`, dlatego Python wczytuje plik `ECG.py`, a nie folder. Nie należy dodawać do folderu `ECG/` plików `.py` ani `__init__.py`.
+
+## Dokumenty projektu
+
+W folderze `docs/`:
+
+- `Dokumentacja projektu pomiar i analiza HRV z opaski Aidlab.pdf` – podstawy medyczne i opis liczenia HRV,
+- `Plan_projektu_ANSight.pdf` – plan projektu,
+- `Podzial_pracy.pdf` – zadania w zespole i kolejne kroki,
+- `Harmonogram_do_kwietnia.pdf` – harmonogram do kwietnia 2027 z wykresem Gantta.
 
 ## Format danych
 
@@ -71,8 +82,13 @@ Nagrania EKG to dane biomedyczne, dlatego nie są przechowywane w repozytorium (
 
 - [x] Przetwarzanie EKG i cechy HRV (czas i częstotliwość)
 - [x] GUI: pomiar na żywo i analiza offline
+- [ ] Protokół badania: kalibracja (ok. 7 min, profil osoby) i test właściwy (ok. 30 min)
+- [ ] Program do odczytu parametrów z okularów Tobii Pro Glasses 3 (źrenica, spojrzenie, jakość pomiaru)
+- [ ] Program do badania ze znacznikami czasu etapów
+- [ ] Synchronizacja EKG i eye-trackingu z etapami badania
 - [ ] Wskaźnik jakości sygnału (SQI) i odporność na artefakty ruchowe
-- [ ] Synchronizacja z danymi z eye-trackingu
-- [ ] Dataset i `DataLoader` w PyTorch
+- [ ] Dataset: cechy EKG i oczu jako zmiana względem kalibracji (delta)
 - [ ] Model bazowy na cechach tabelarycznych, potem 1D-CNN
 - [ ] Fuzja późna (late fusion) cech EKG i okulograficznych
+
+Szczegółowe terminy są w `docs/Harmonogram_do_kwietnia.pdf`.
